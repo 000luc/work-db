@@ -1,0 +1,9 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Database (local, contains private session data)
+work.db
+
+# Config (contains local paths)
+config.json
