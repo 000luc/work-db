@@ -185,6 +185,18 @@ def cmd_query(args):
 
 
 # ── 命令: analyze ────────────────────────────────────
+def _get_topic_evidence(conn, topic, limit=3):
+    """获取某标签下最近的 N 条会话作为证据。"""
+    return conn.execute("""
+        SELECT s.id, s.started_at, s.project
+        FROM sessions s
+        JOIN topics t ON t.session_id = s.id
+        WHERE t.topic = ?
+        ORDER BY s.started_at DESC
+        LIMIT ?
+    """, (topic, limit)).fetchall()
+
+
 def cmd_analyze(args):
     config = load_config()
     set_db_path(config.get("db_path", "work.db"))
@@ -213,7 +225,12 @@ def cmd_analyze(args):
         for i, r in enumerate(conn.execute(
             "SELECT project, COUNT(*) cnt FROM sessions WHERE project IS NOT NULL GROUP BY project ORDER BY cnt DESC LIMIT 15"
         ).fetchall(), 1):
-            print(f"  {i:2d}. {r['project']}: {r['cnt']} 会话")
+            evi = conn.execute(
+                "SELECT started_at FROM sessions WHERE project=? AND started_at IS NOT NULL ORDER BY started_at DESC LIMIT 2",
+                (r["project"],)
+            ).fetchall()
+            evi_str = ", ".join(e["started_at"][:10] for e in evi)
+            print(f"  {i:2d}. {r['project']}: {r['cnt']} 会话（最近: {evi_str}）")
 
         # 标签分布
         print("\n--- 标签分布 ---")
@@ -238,7 +255,12 @@ def cmd_analyze(args):
         ).fetchall()
         if projects:
             top = projects[0]
-            suggestions.append(f"高频项目 '{top['project']}' 有 {top['cnt']} 个会话")
+            evi = conn.execute(
+                "SELECT started_at FROM sessions WHERE project=? AND started_at IS NOT NULL ORDER BY started_at DESC LIMIT 2",
+                (top["project"],)
+            ).fetchall()
+            evi_str = ", ".join(e["started_at"][:10] for e in evi)
+            suggestions.append(f"高频项目 '{top['project']}' 有 {top['cnt']} 个会话（最近: {evi_str}）")
 
         topics = conn.execute(
             "SELECT topic, COUNT(*) cnt FROM topics GROUP BY topic ORDER BY cnt DESC LIMIT 5"
@@ -265,9 +287,12 @@ def cmd_analyze(args):
                     existing_skills.add(d.lower().replace("-", "").replace("_", ""))
 
         skill_candidates = conn.execute("""
-            SELECT topic, COUNT(DISTINCT session_id) cnt
-            FROM topics
-            GROUP BY topic ORDER BY cnt DESC
+            SELECT t.topic, COUNT(DISTINCT t.session_id) cnt, MAX(s.started_at) last_active
+            FROM topics t
+            JOIN sessions s ON s.id = t.session_id
+            GROUP BY t.topic
+            HAVING cnt >= 5
+            ORDER BY last_active DESC
         """).fetchall()
 
         skill_map = {
@@ -286,18 +311,25 @@ def cmd_analyze(args):
         }
 
         found = False
-        for topic, cnt in skill_candidates:
-            if cnt < 5:
-                continue
+        for row in skill_candidates:
+            topic = row["topic"]
+            cnt = row["cnt"]
+            last_active = row["last_active"][:10] if row["last_active"] else "?"
             if topic in skill_map:
                 desc, existing = skill_map[topic]
                 key = topic.lower().replace("-", "").replace("_", "")
+                evidence = _get_topic_evidence(conn, topic)
+                evi_str = " | ".join(
+                    f"{r['started_at'][:10] if r['started_at'] else '?'} {r['project'] or ''}"
+                    for r in evidence
+                )
                 if existing and existing.lower().replace("-", "").replace("_", "") in existing_skills:
-                    print(f"  ✅ {topic}（{cnt}会话）- 已有skill: {existing}")
+                    print(f"  ✅ {topic}（{cnt}会话，最近{last_active}）- 已有skill: {existing}")
                 elif existing:
-                    print(f"  ⚠️ {topic}（{cnt}会话）- 已有同名skill未安装: {existing}")
+                    print(f"  ⚠️ {topic}（{cnt}会话，最近{last_active}）- 已定义skill未安装: {existing}")
                 else:
-                    print(f"  💡 {topic}（{cnt}会话）- 建议创建skill: {desc}")
+                    print(f"  💡 {topic}（{cnt}会话，最近{last_active}）- {desc}")
+                print(f"     证据: {evi_str}")
                 found = True
 
         if not found:
