@@ -233,7 +233,6 @@ def cmd_analyze(args):
         print("\n--- 写入 CLAUDE.md 的建议 ---")
         suggestions = []
 
-        # 检查高频项目
         projects = conn.execute(
             "SELECT project, COUNT(*) cnt FROM sessions WHERE project IS NOT NULL GROUP BY project ORDER BY cnt DESC LIMIT 5"
         ).fetchall()
@@ -241,7 +240,6 @@ def cmd_analyze(args):
             top = projects[0]
             suggestions.append(f"高频项目 '{top['project']}' 有 {top['cnt']} 个会话")
 
-        # 检查高频标签
         topics = conn.execute(
             "SELECT topic, COUNT(*) cnt FROM topics GROUP BY topic ORDER BY cnt DESC LIMIT 5"
         ).fetchall()
@@ -254,6 +252,56 @@ def cmd_analyze(args):
                 print(f"  - {s}")
         else:
             print("  (数据不足，暂无法生成建议)")
+
+        # Skill 建议
+        print("\n--- 可形成的 Skill 建议 ---")
+
+        existing_skills = set()
+        skills_dir = os.path.expanduser("~/.claude/skills")
+        if os.path.isdir(skills_dir):
+            for d in os.listdir(skills_dir):
+                skill_path = os.path.join(skills_dir, d, "SKILL.md")
+                if os.path.isfile(skill_path):
+                    existing_skills.add(d.lower().replace("-", "").replace("_", ""))
+
+        skill_candidates = conn.execute("""
+            SELECT topic, COUNT(DISTINCT session_id) cnt
+            FROM topics
+            GROUP BY topic ORDER BY cnt DESC
+        """).fetchall()
+
+        skill_map = {
+            "审计复核": ("审计报告/底稿交叉复核，含Excel与Word比对、勾稽关系检查", "audit-report-review"),
+            "合同审核": ("付款合同审批流程审核，金额/付款节点/签订主体交叉比对", "contract-approval-auditing"),
+            "财报分析": ("财务报表分析、同行业对比、指标计算与解读", "financial-report-review"),
+            "租赁准则": ("新租赁准则下的会计处理、使用权资产计算、披露要求", None),
+            "股权激励": ("股份支付计算、股权激励方案设计、会计处理", None),
+            "税务申报": ("所得税测算、税务报表生成、纳税申报", "tax-report-generator"),
+            "OCR识别": ("扫描件文字识别、PDF转Excel、批量文档处理", None),
+            "Excel": ("Excel模板制作、公式优化、数据透视、VBA自动化", None),
+            "自动化": ("Python脚本、批量处理、RPA流程自动化", "automation-workflows"),
+            "会议纪要": ("会议记录整理、纪要结构化、待办事项提取", None),
+            "方案设计": ("技术方案设计、需求分析、架构选型", "brainstorming"),
+            "微信": ("微信公众号文章抓取、内容管理", "wechat-article-spider"),
+        }
+
+        found = False
+        for topic, cnt in skill_candidates:
+            if cnt < 5:
+                continue
+            if topic in skill_map:
+                desc, existing = skill_map[topic]
+                key = topic.lower().replace("-", "").replace("_", "")
+                if existing and existing.lower().replace("-", "").replace("_", "") in existing_skills:
+                    print(f"  ✅ {topic}（{cnt}会话）- 已有skill: {existing}")
+                elif existing:
+                    print(f"  ⚠️ {topic}（{cnt}会话）- 已有同名skill未安装: {existing}")
+                else:
+                    print(f"  💡 {topic}（{cnt}会话）- 建议创建skill: {desc}")
+                found = True
+
+        if not found:
+            print("  (数据不足，暂无法形成skill建议)")
 
         print()
 
